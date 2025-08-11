@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+videos/default_safety_video.mp4
+
+# Virtual environments
+.venv
+.env
+
+# Ignore logs directory and all its contents
+logs/
+**/logs/
+
+
+# Ignore logs directory and all its contents
+uploads/
+
+# Ignore all log files anywhere in the project
+*.log
+
+videos/*.mp4
+videos/default_safety_video.mp4

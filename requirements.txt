@@ -1,0 +1,12 @@
+streamlit
+ultralytics
+opencv-python
+numpy
+pandas
+scikit-learn
+scipy
+matplotlib
+seaborn
+pillow
+requests
+tqdm
