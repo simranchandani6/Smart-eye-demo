@@ -1,15 +1,11 @@
-ultralytics
-numpy
-pandas
-scikit-learn
-scipy
-matplotlib
-seaborn
-pillow
-requests
-tqdm
-opencv-python-headless==4.8.0.76
-streamlit
-numpy
-torch
-torchvision
+# Machine Learning and Computer Vision
+torch==2.0.1
+torchvision==0.15.2
+ultralytics==8.3.166
+easyocr==1.6.2
+opencv-python==4.8.1.78
+scikit-learn==1.2.1
+pandas==1.5.3
+numpy==1.23.5
+pillow==11.3.0
+streamlit==1.28.0
