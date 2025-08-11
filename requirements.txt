@@ -1,8 +1,8 @@
 # Machine Learning and Computer Vision
 ultralytics==8.3.166
-opencv-python==4.8.1.78
+opencv-python
 scikit-learn==1.2.1
 pandas==1.5.3
 numpy==1.23.5
 pillow<11.0
-streamlit==1.28.0
+streamlit
