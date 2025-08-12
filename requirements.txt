@@ -1,9 +1,9 @@
 # Machine Learning and Computer Vision
-ultralytics==8.3.166
+ultralytics
 opencv-python
-scikit-learn==1.2.1
-pandas==1.5.3
-numpy==1.23.5
-pillow<11.0
+scikit-learn
+pandas
+numpy
+pillow
 streamlit
-opencv-python-headless==4.8.0.76
+opencv-python-headless
