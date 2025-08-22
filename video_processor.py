@@ -133,9 +133,14 @@ class SmartEyeProcessor:
         person_ppe_tracking = defaultdict(list)
         fire_heavy_buffer = []
 
+        # Variable to manage skip frame number during inference
+        SKIP_FRAMES = 4  # Number of frames to skip after each inference
+        last_hazard_results = None
+        last_ppe_results = None
+
         progress_bar = st.progress(0)
         status_text = st.empty()
-        
+
         try:
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -145,8 +150,15 @@ class SmartEyeProcessor:
                 frame_count += 1
                 current_time = frame_count / fps
 
-                hazard_results = self.hazard_model(frame, verbose=False)
-                ppe_results = self.ppe_model(frame, verbose=False)
+                # Do inference only on every (SKIP_FRAMES+1)th frame, reuse previous results otherwise
+                if (frame_count - 1) % (SKIP_FRAMES + 1) == 0:
+                    hazard_results = self.hazard_model(frame, verbose=False)
+                    ppe_results = self.ppe_model(frame, verbose=False)
+                    last_hazard_results = hazard_results
+                    last_ppe_results = ppe_results
+                else:
+                    hazard_results = last_hazard_results
+                    ppe_results = last_ppe_results
                 
                 all_boxes, all_confidences, all_class_names, all_colors = [], [], [], []
                 

@@ -84,6 +84,8 @@ if hazard_model and ppe_model:
             st.warning(f"Default video not found at `{default_video_path}`. Please create the `videos` directory and place a video file there.")
             
     # --- Video Processing ---
+    # import time
+    # start_time = time.time()
     if input_video_path:
         col1, col2 = st.columns(2)
         with col1:
@@ -206,6 +208,8 @@ if hazard_model and ppe_model:
                     st.download_button(label="Download Safety Report (PDF)", data=pdf_file.read(), file_name=f"safety_report_{data['user_id']}.pdf", mime="application/pdf", use_container_width=True)
             else:
                 st.warning("Safety report not available")
+        # end_time = time.time()
+        # print(f"Video processing time: {end_time - start_time:.2f} seconds")
              
         # Clear results button
         if st.button("🗑️ Clear Results", type="secondary"):
