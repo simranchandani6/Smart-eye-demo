@@ -59,21 +59,30 @@ class SmartEyeProcessor:
 
 
     def histogram_similarity(self, img1_path, img2_path):
-        img1 = cv2.imread(img1_path)
-        img2 = cv2.imread(img2_path)
+        # Read images in grayscale for faster processing
+        img1 = cv2.imread(img1_path, cv2.IMREAD_GRAYSCALE)
+        img2 = cv2.imread(img2_path, cv2.IMREAD_GRAYSCALE)
 
         if img1 is None or img2 is None:
             return 0.0
 
-        img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]))
+        # Resize img2 to match img1 shape
+        if img2.shape != img1.shape:
+            img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]), interpolation=cv2.INTER_AREA)
 
-        hist1 = cv2.calcHist([img1], [0], None, [256], [0, 256])
-        hist2 = cv2.calcHist([img2], [0], None, [256], [0, 256])
+        # Calculate normalized histograms and flatten for faster comparison
+        hist1 = cv2.calcHist([img1], [0], None, [64], [0, 256])
+        hist2 = cv2.calcHist([img2], [0], None, [64], [0, 256])
+        cv2.normalize(hist1, hist1)
+        cv2.normalize(hist2, hist2)
         similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
         return round(similarity * 100, 2)
 
-    def calculate_overlap_percentage(self, box1, box2):
+    def calculate_overlap_percentage(self, box1: tuple, box2: tuple) -> float:
         """Calculate intersection over union (IoU) percentage"""
+        if len(box1) != 4 or len(box2) != 4:
+            raise ValueError("Both boxes must be tuples of length 4 (x1, y1, x2, y2).")
+        
         x1_inter = max(box1[0], box2[0])
         y1_inter = max(box1[1], box2[1])
         x2_inter = min(box1[2], box2[2])
@@ -88,21 +97,20 @@ class SmartEyeProcessor:
         return 0
     
     def calculate_distance(self, box1, box2):
-        """Calculate distance between centers of two bounding boxes"""
-        center1_x = (box1[0] + box1[2]) / 2
-        center1_y = (box1[1] + box1[3]) / 2
-        center2_x = (box2[0] + box2[2]) / 2
-        center2_y = (box2[1] + box2[3]) / 2
-        
-        return np.sqrt((center1_x - center2_x)**2 + (center1_y - center2_y)**2)
+        """Calculate distance between centers of two bounding boxes (optimized)"""
+        box1 = np.asarray(box1)
+        box2 = np.asarray(box2)
+        center1 = (box1[:2] + box1[2:]) / 2
+        center2 = (box2[:2] + box2[2:]) / 2
+        return float(np.linalg.norm(center1 - center2))
     
     def is_ppe_inside_person(self, ppe_box, person_box, threshold=0.5):
-        """Check if PPE detection is inside person bounding box"""
-        ppe_center_x = (ppe_box[0] + ppe_box[2]) / 2
-        ppe_center_y = (ppe_box[1] + ppe_box[3]) / 2
-        
-        return (person_box[0] <= ppe_center_x <= person_box[2] and 
-                person_box[1] <= ppe_center_y <= person_box[3])
+        """Check if PPE detection is inside person bounding box (optimized)"""
+        ppe_box = np.asarray(ppe_box)
+        person_box = np.asarray(person_box)
+        ppe_center = (ppe_box[:2] + ppe_box[2:]) / 2
+        return (person_box[0] <= ppe_center[0] <= person_box[2] and 
+                person_box[1] <= ppe_center[1] <= person_box[3])
     
 
     
@@ -110,31 +118,34 @@ class SmartEyeProcessor:
         """Process video and detect hazards"""
         if 'processing_data' not in st.session_state:
             st.session_state.processing_data = {}
-            
+
         self.user_id = user_id
         self.video_name = os.path.basename(video_path)
         self.processing_start_time = datetime.now()
-        
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError("Error opening video file")
-        
+
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
+
         output_video_path = os.path.join(output_dir, f"processed_{self.video_name}")
-        
+
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_video_path, fourcc, fps, (frame_width, frame_height))
-        
+
         frame_count = 0
         person_ppe_tracking = defaultdict(list)
         fire_heavy_buffer = []
 
-        # Variable to manage skip frame number during inference
-        SKIP_FRAMES = 4  # Number of frames to skip after each inference
+        # Precompute model names for faster lookup
+        hazard_names = self.hazard_model.names
+        ppe_names = self.ppe_model.names
+
+        SKIP_FRAMES = 4
         last_hazard_results = None
         last_ppe_results = None
 
@@ -161,59 +172,53 @@ class SmartEyeProcessor:
                     ppe_results = last_ppe_results
                 
                 all_boxes, all_confidences, all_class_names, all_colors = [], [], [], []
-                
-                def append_detections(results, model, color_map):
+
+                def fast_append_detections(results, model_names, color_map):
                     if len(results) > 0 and results[0].boxes is not None:
-                        boxes = results[0].boxes.xyxy.cpu()
-                        confs = results[0].boxes.conf.cpu()
-                        cls_ids = results[0].boxes.cls.cpu().int()
+                        boxes = results[0].boxes.xyxy.cpu().numpy()
+                        confs = results[0].boxes.conf.cpu().numpy()
+                        cls_ids = results[0].boxes.cls.cpu().int().numpy()
                         for i in range(len(boxes)):
-                            class_name = model.names[cls_ids[i].item()]
-                            conf = confs[i].item()
-                            
+                            class_name = model_names[cls_ids[i]]
+                            conf = confs[i]
                             threshold = self.LADDER_CONF_THRESHOLD if class_name == 'ladder' else self.CONF_THRESHOLD
-                            
                             if conf > threshold:
-                                all_boxes.append(boxes[i].numpy())
+                                all_boxes.append(boxes[i])
                                 all_confidences.append(conf)
                                 all_class_names.append(class_name)
                                 all_colors.append(color_map.get(class_name, self.DEFAULT_COLOR))
-                
-                append_detections(hazard_results, self.hazard_model, self.HAZARD_COLOR_MAP)
-                append_detections(ppe_results, self.ppe_model, self.PPE_COLOR_MAP)
+
+                fast_append_detections(hazard_results, hazard_names, self.HAZARD_COLOR_MAP)
+                fast_append_detections(ppe_results, ppe_names, self.PPE_COLOR_MAP)
                 
                 final_indices = []
-                if len(all_boxes) > 0:
-                    xywh_boxes = [[int(b[0]), int(b[1]), int(b[2]-b[0]), int(b[3]-b[1])] for b in all_boxes]
+                if all_boxes:
+                    xywh_boxes = np.array([[int(b[0]), int(b[1]), int(b[2]-b[0]), int(b[3]-b[1])] for b in all_boxes])
+                    all_confidences_np = np.array(all_confidences)
+                    all_class_names_np = np.array(all_class_names)
                     unique_class_names = set(all_class_names)
-                    
                     for class_name in unique_class_names:
-                        class_indices = [i for i, name in enumerate(all_class_names) if name == class_name]
-                        class_boxes = [xywh_boxes[i] for i in class_indices]
-                        class_confidences = [all_confidences[i] for i in class_indices]
-                        
-                        if len(class_boxes) > 0:
-                            indices_after_nms = cv2.dnn.NMSBoxes(class_boxes, class_confidences, 
-                                                               self.CONF_THRESHOLD, self.NMS_THRESHOLD)
+                        class_indices = np.where(all_class_names_np == class_name)[0]
+                        class_boxes = xywh_boxes[class_indices].tolist()
+                        class_confidences = all_confidences_np[class_indices].tolist()
+                        if class_boxes:
+                            indices_after_nms = cv2.dnn.NMSBoxes(class_boxes, class_confidences, self.CONF_THRESHOLD, self.NMS_THRESHOLD)
                             if len(indices_after_nms) > 0:
                                 final_indices.extend([class_indices[i] for i in indices_after_nms.flatten()])
                 
                 hazards_in_frame = []
-                
-                if self.continuous_fire_cooldown > 0:
-                    self.continuous_fire_cooldown -= 1
-                if self.ladder_person_cooldown > 0:
-                    self.ladder_person_cooldown -= 1
-                if self.fire_person_cooldown > 0:
-                    self.fire_person_cooldown -= 1
-                if self.ppe_violation_cooldown > 0:
-                    self.ppe_violation_cooldown -= 1
-                if self.heavy_vehicle_fire_cooldown > 0:
-                    self.heavy_vehicle_fire_cooldown -= 1
-                if self.fire_forklift_cooldown > 0:
-                    self.fire_forklift_cooldown -= 1
-                if self.person_forklift_cooldown > 0:
-                    self.person_forklift_cooldown -= 1
+                # Grouped cooldown logic for efficiency
+                for attr in [
+                    "continuous_fire_cooldown",
+                    "ladder_person_cooldown",
+                    "fire_person_cooldown",
+                    "ppe_violation_cooldown",
+                    "heavy_vehicle_fire_cooldown",
+                    "fire_forklift_cooldown",
+                    "person_forklift_cooldown"
+                ]:
+                    if getattr(self, attr) > 0:
+                        setattr(self, attr, getattr(self, attr) - 1)
                 
                 fire_detections = [(i, all_boxes[i]) for i in final_indices if all_class_names[i] == 'fire']
                 person_detections = [(i, all_boxes[i]) for i in final_indices if all_class_names[i] == 'person']
@@ -239,20 +244,35 @@ class SmartEyeProcessor:
                     else:
                         self.fire_continuous_frames = 0
                 
-                for person_idx, person_box in person_detections:
-                    person_key = f"person_{person_idx}"
-                    no_classes = []
-                    for ppe_idx, ppe_box, ppe_class in ppe_detections:
-                        if self.is_ppe_inside_person(ppe_box, person_box) and ppe_class.startswith("no_"):
-                            no_classes.append(ppe_class)
+                # Optimize PPE violation tracking using NumPy
+                person_indices_np = np.array([idx for idx, _ in person_detections])
+                person_boxes_np = np.array([box for _, box in person_detections])
+                ppe_indices_np = np.array([idx for idx, _, _ in ppe_detections])
+                ppe_boxes_np = np.array([box for _, box, _ in ppe_detections])
+                ppe_classes_np = np.array([cls for _, _, cls in ppe_detections])
+
+                for pi, person_box in zip(person_indices_np, person_boxes_np):
+                    person_key = f"person_{pi}"
+                    # Vectorized PPE-inside-person detection
+                    if ppe_boxes_np.shape[0] > 0:
+                        ppe_centers = (ppe_boxes_np[:, :2] + ppe_boxes_np[:, 2:]) / 2
+                        inside_mask = (
+                            (person_box[0] <= ppe_centers[:, 0]) & (ppe_centers[:, 0] <= person_box[2]) &
+                            (person_box[1] <= ppe_centers[:, 1]) & (ppe_centers[:, 1] <= person_box[3])
+                        )
+                        no_mask = np.char.startswith(ppe_classes_np.astype(str), "no_")
+                        ppe_inside_mask = inside_mask & no_mask
+                        no_classes = ppe_classes_np[ppe_inside_mask].tolist()
+                    else:
+                        no_classes = []
                     person_ppe_tracking[person_key].append((frame_count, len(no_classes), list(no_classes), person_box))
-                    
-                    person_ppe_tracking[person_key] = [
-                        x for x in person_ppe_tracking[person_key] if frame_count - x[0] < self.ppe_violation_window * fps
-                    ]
-                    
+                    # Keep only recent window
+                    person_ppe_tracking[person_key] = [x for x in person_ppe_tracking[person_key] if frame_count - x[0] < self.ppe_violation_window * fps]
                     if len(person_ppe_tracking[person_key]) >= self.ppe_violation_window * fps:
-                        max_no = max(person_ppe_tracking[person_key], key=lambda x: x[1])
+                        # Use NumPy argmax for max_no selection
+                        counts = np.array([x[1] for x in person_ppe_tracking[person_key]])
+                        idx_max = np.argmax(counts)
+                        max_no = person_ppe_tracking[person_key][idx_max]
                         if max_no[1] > 0 and self.ppe_violation_cooldown == 0:
                             hazards_in_frame.append({
                                 'type': 'PPE_VIOLATION',
@@ -266,11 +286,15 @@ class SmartEyeProcessor:
                         person_ppe_tracking[person_key] = []
 
                 if self.fire_person_cooldown == 0:
-                    triggered = False
-                    for fire_idx, fire_box in fire_detections:
-                        for person_idx, person_box in person_detections:
-                            overlap_pct = self.calculate_overlap_percentage(fire_box, person_box)
-                            if overlap_pct >= 10.0:
+                    # Vectorized fire-person proximity
+                    if fire_detections and person_detections:
+                        fire_boxes_np = np.array([box for _, box in fire_detections])
+                        person_boxes_np2 = np.array([box for _, box in person_detections])
+                        for f_idx, fire_box in enumerate(fire_boxes_np):
+                            overlaps = np.array([self.calculate_overlap_percentage(fire_box, person_box) for person_box in person_boxes_np2])
+                            mask = overlaps >= 10.0
+                            if np.any(mask):
+                                person_box = person_boxes_np2[np.argmax(mask)]
                                 hazards_in_frame.append({
                                     'type': 'FIRE_PERSON_PROXIMITY',
                                     'severity': 'CRITICAL',
@@ -279,18 +303,19 @@ class SmartEyeProcessor:
                                     'timestamp': current_time
                                 })
                                 self.fire_person_cooldown = 60
-                                triggered = True
                                 break
-                        if triggered:
-                            break
                 
                 if self.fire_forklift_cooldown == 0:
-                    triggered = False
-                    for fire_idx, fire_box in fire_detections:
-                        for forklift_idx, forklift_box in forklift_detections:
-                            overlap_pct = self.calculate_overlap_percentage(fire_box, forklift_box)
-                            distance = self.calculate_distance(fire_box, forklift_box)
-                            if overlap_pct >= 5.0 or distance < 100:
+                    # Vectorized fire-forklift proximity
+                    if fire_detections and forklift_detections:
+                        fire_boxes_np = np.array([box for _, box in fire_detections])
+                        forklift_boxes_np = np.array([box for _, box in forklift_detections])
+                        for fire_box in fire_boxes_np:
+                            overlaps = np.array([self.calculate_overlap_percentage(fire_box, forklift_box) for forklift_box in forklift_boxes_np])
+                            distances = np.array([self.calculate_distance(fire_box, forklift_box) for forklift_box in forklift_boxes_np])
+                            mask = (overlaps >= 5.0) | (distances < 100)
+                            if np.any(mask):
+                                forklift_box = forklift_boxes_np[np.argmax(mask)]
                                 hazards_in_frame.append({
                                     'type': 'FIRE_FORKLIFT_PROXIMITY',
                                     'severity': 'MEDIUM',
@@ -299,25 +324,23 @@ class SmartEyeProcessor:
                                     'timestamp': current_time
                                 })
                                 self.fire_forklift_cooldown = 60
-                                triggered = True
                                 break
-                        if triggered:
-                            break
 
                 fire_heavy_found_this_frame = False
                 interacting_boxes_this_frame = []
-                interaction_detected = False
-                for _, vehicle_box in heavy_vehicle_detections:
-                    for _, fire_box in fire_detections:
-                        overlap_pct = self.calculate_overlap_percentage(vehicle_box, fire_box)
-                        distance = self.calculate_distance(vehicle_box, fire_box)
-                        if overlap_pct >= 5.0 or distance < 100:
+                fire_heavy_found_this_frame = False
+                if heavy_vehicle_detections and fire_detections:
+                    vehicle_boxes_np = np.array([box for _, box in heavy_vehicle_detections])
+                    fire_boxes_np = np.array([box for _, box in fire_detections])
+                    for vehicle_box in vehicle_boxes_np:
+                        overlaps = np.array([self.calculate_overlap_percentage(vehicle_box, fire_box) for fire_box in fire_boxes_np])
+                        distances = np.array([self.calculate_distance(vehicle_box, fire_box) for fire_box in fire_boxes_np])
+                        mask = (overlaps >= 5.0) | (distances < 100)
+                        if np.any(mask):
+                            fire_box = fire_boxes_np[np.argmax(mask)]
                             fire_heavy_found_this_frame = True
                             interacting_boxes_this_frame = [vehicle_box, fire_box]
-                            interaction_detected = True
                             break
-                    if interaction_detected:
-                        break
                 
                 fire_heavy_buffer.append((fire_heavy_found_this_frame, interacting_boxes_this_frame))
                 if len(fire_heavy_buffer) > self.fire_heavy_window:
@@ -345,11 +368,15 @@ class SmartEyeProcessor:
 
 
                 if self.ladder_person_cooldown == 0:
-                    triggered = False
-                    for ladder_idx, ladder_box in ladder_detections:
-                        for person_idx, person_box in person_detections:
-                            overlap_pct = self.calculate_overlap_percentage(ladder_box, person_box)
-                            if overlap_pct >= self.ladder_person_threshold:
+                    # Vectorized ladder-person proximity
+                    if ladder_detections and person_detections:
+                        ladder_boxes_np = np.array([box for _, box in ladder_detections])
+                        person_boxes_np3 = np.array([box for _, box in person_detections])
+                        for ladder_box in ladder_boxes_np:
+                            overlaps = np.array([self.calculate_overlap_percentage(ladder_box, person_box) for person_box in person_boxes_np3])
+                            mask = overlaps >= self.ladder_person_threshold
+                            if np.any(mask):
+                                person_box = person_boxes_np3[np.argmax(mask)]
                                 hazards_in_frame.append({
                                     'type': 'LADDER_CLIMBING',
                                     'severity': 'INFO',
@@ -358,17 +385,22 @@ class SmartEyeProcessor:
                                     'timestamp': current_time
                                 })
                                 self.ladder_person_cooldown = 60
-                                triggered = True
                                 break
-                        if triggered:
-                            break
 
                 if self.person_forklift_cooldown == 0:
-                    triggered = False
-                    for person_idx, person_box in person_detections:
-                        for forklift_idx, forklift_box in forklift_detections:
-                            if (person_box[0] >= forklift_box[0] and person_box[1] >= forklift_box[1] and
-                                person_box[2] <= forklift_box[2] and person_box[3] <= forklift_box[3]):
+                    # Vectorized person-in-forklift detection
+                    if person_detections and forklift_detections:
+                        person_boxes_np4 = np.array([box for _, box in person_detections])
+                        forklift_boxes_np2 = np.array([box for _, box in forklift_detections])
+                        for person_box in person_boxes_np4:
+                            mask = np.all([
+                                (person_box[0] >= forklift_boxes_np2[:, 0]),
+                                (person_box[1] >= forklift_boxes_np2[:, 1]),
+                                (person_box[2] <= forklift_boxes_np2[:, 2]),
+                                (person_box[3] <= forklift_boxes_np2[:, 3])
+                            ], axis=0)
+                            if np.any(mask):
+                                forklift_box = forklift_boxes_np2[np.argmax(mask)]
                                 hazards_in_frame.append({
                                     'type': 'PERSON_IN_FORKLIFT',
                                     'severity': 'INFO',
@@ -377,10 +409,7 @@ class SmartEyeProcessor:
                                     'timestamp': current_time
                                 })
                                 self.person_forklift_cooldown = 60 * fps
-                                triggered = True
                                 break
-                        if triggered:
-                            break
 
                 for i in final_indices:
                     box = all_boxes[i]
