@@ -10,6 +10,7 @@ wheels/
 # Virtual environments
 .venv
 .env
+venv
 
 # Ignore logs directory and all its contents
 logs/
